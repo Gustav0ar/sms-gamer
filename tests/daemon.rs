@@ -7,7 +7,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -27,7 +27,7 @@ struct Simulator {
     slave: File,
     requests: Arc<Mutex<Vec<Vec<u8>>>>,
     status: Arc<Mutex<Option<(u8, u16)>>>,
-    dropped_replies: Arc<AtomicUsize>,
+    dropped_replies: Arc<Mutex<usize>>,
     stop: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -49,7 +49,7 @@ impl Simulator {
         let stop = Arc::new(AtomicBool::new(false));
         let status = Arc::new(Mutex::new(None::<(u8, u16)>));
         let status_reply = status.clone();
-        let dropped_replies = Arc::new(AtomicUsize::new(0));
+        let dropped_replies = Arc::new(Mutex::new(0usize));
         let drop_reply = dropped_replies.clone();
         let seen = requests.clone();
         let quit = stop.clone();
@@ -89,12 +89,16 @@ impl Simulator {
                     };
                     seen.lock().unwrap().push(frame);
                     if let Some(query) = query {
-                        if drop_reply
-                            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
-                                remaining.checked_sub(1)
-                            })
-                            .is_ok()
-                        {
+                        let skip = {
+                            let mut remaining = drop_reply.lock().unwrap();
+                            if *remaining > 0 {
+                                *remaining -= 1;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if skip {
                             continue;
                         }
                         let reply = replies.iter().find(|r| r["query"] == query).unwrap();
@@ -403,7 +407,7 @@ fn energy_counts_real_samples_marks_a_retried_read_and_survives_restart() {
     let known_ms = baseline["observed_ms"].as_i64().unwrap();
     let expected = 1400.0 * 0.233 * known_ms as f64 / 3_600_000_000.0;
     assert!((kwh - expected).abs() < 1e-10, "{observed}");
-    simulator.dropped_replies.store(1, Ordering::Relaxed);
+    *simulator.dropped_replies.lock().unwrap() = 1;
     let sequence = observed["sample"]["sequence"].as_i64().unwrap();
     let recovered = daemon.wait_for(|s| s["sample"]["sequence"].as_i64().unwrap_or(0) > sequence);
     let after_miss = &recovered["energy"]["counters"]["total"];
@@ -531,7 +535,7 @@ fn battery_history_records_real_transitions_splits_retried_reads_and_survives_re
         );
         thread::sleep(Duration::from_millis(20));
     }
-    simulator.dropped_replies.store(1, Ordering::Relaxed);
+    *simulator.dropped_replies.lock().unwrap() = 1;
     let resumed = daemon.wait_for(|s| {
         s["battery_history"]["active_session"]["id"]
             .as_i64()
@@ -642,11 +646,11 @@ fn missed_monitoring_replies_do_not_emit_disconnect_and_reconnect() {
     // The USB/serial connection stays open, but individual Q responses are lost.
     let mut sequence = online["sample"]["sequence"].as_i64().unwrap();
     for missed in [1, 2, 3] {
-        simulator.dropped_replies.store(missed, Ordering::Relaxed);
+        *simulator.dropped_replies.lock().unwrap() = missed;
         let recovered =
             daemon.wait_for(|s| s["sample"]["sequence"].as_i64().unwrap_or(0) > sequence);
         sequence = recovered["sample"]["sequence"].as_i64().unwrap();
-        assert_eq!(simulator.dropped_replies.load(Ordering::Relaxed), 0);
+        assert_eq!(*simulator.dropped_replies.lock().unwrap(), 0);
     }
     let events = daemon.call("GetEvents", json!({}));
     let connections: Vec<_> = events["parameters"]["events"]
@@ -673,7 +677,7 @@ fn missed_monitoring_replies_do_not_emit_disconnect_and_reconnect() {
     );
 
     // A silent UPS must still become disconnected after the bounded retry budget.
-    simulator.dropped_replies.store(4, Ordering::Relaxed);
+    *simulator.dropped_replies.lock().unwrap() = 4;
     let offline = daemon.wait_for(|s| s["connection"] == "disconnected");
     assert_eq!(offline["sample"]["sequence"], sequence);
     assert!(
@@ -686,10 +690,10 @@ fn missed_monitoring_replies_do_not_emit_disconnect_and_reconnect() {
     drop(daemon);
 
     // Missed handshake responses need the same retries as periodic status reads.
-    simulator.dropped_replies.store(3, Ordering::Relaxed);
+    *simulator.dropped_replies.lock().unwrap() = 3;
     let restarted = Daemon::start(dir.path(), &simulator.path);
     restarted.wait_for(|s| s["connection"] == "online");
-    assert_eq!(simulator.dropped_replies.load(Ordering::Relaxed), 0);
+    assert_eq!(*simulator.dropped_replies.lock().unwrap(), 0);
     let events = restarted.call("GetEvents", json!({}));
     let connections: Vec<_> = events["parameters"]["events"]
         .as_array()

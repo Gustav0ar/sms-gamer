@@ -80,6 +80,8 @@ cargo deny check advisories licenses sources
 
 Integration tests need `dbus-daemon`, `dbus-test-tool`, `busctl`, and `kill`. They use Rust pseudo-terminal UPS simulators and private D-Bus services. They never open physical USB devices or call the host's power-off service.
 
+On Debian and Ubuntu, install the test tools with `sudo apt-get install dbus dbus-bin dbus-tests systemd`.
+
 With the Luau CLI on `PATH`, run the panel's pagination and lifecycle tests:
 
 ```sh
