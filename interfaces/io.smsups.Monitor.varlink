@@ -1,0 +1,224 @@
+# SMS Gamer UPS monitoring and explicit, serialized control requests.
+interface io.smsups.Monitor
+
+type ConnectionState (connecting, online, disconnected, stopped)
+type Topology (line_interactive, online_interactive, online)
+
+# Flags follow PowerView 5.01.07's parser. Behavior on Gamer firmware is unverified.
+type VendorFlags (
+    beeper_enabled: bool,
+    shutdown_active: bool,
+    self_test_active: bool,
+    ups_ok: bool,
+    boost: bool,
+    bypass: bool,
+    low_battery: bool,
+    on_battery: bool
+)
+
+type Alerts (low_charge: bool, high_load: bool, high_temperature: bool)
+
+# Shutdown uses logind's orderly host power-off, never a UPS output command.
+type ProtectionConfig (
+    enabled: bool,
+    warning_seconds: int,
+    shutdown_seconds: int,
+    battery_mode_verified: bool
+)
+type ProtectionPhase (disabled, waiting, monitoring, warning, unverified, shutdown_requested, shutdown_failed)
+type ProtectionStatus (
+    phase: ProtectionPhase,
+    remaining_seconds: ?int,
+    shutdown_in_seconds: ?int,
+    warning_active: bool,
+    telemetry_stale: bool,
+    last_error: ?string,
+    dry_run: bool
+)
+
+# Assumptions, not measured values. Defaults describe a stock Gamer 2000.
+type RuntimeConfig (
+    rated_output_w: float,
+    battery_capacity_ah: float,
+    battery_health_percent: float,
+    inverter_efficiency_percent: float,
+    idle_power_w: float,
+    peukert_exponent: float,
+    capacity_rating_hours: float
+)
+
+# Low-confidence lead-acid model, not a device-reported time-to-empty.
+type RuntimeEstimate (
+    remaining_seconds: int,
+    estimated_load_w: float,
+    estimated_battery_power_w: float,
+    nominal_capacity_wh: float,
+    estimated_remaining_charge_percent: float,
+    battery_mode: bool,
+    mode_verified: bool,
+    model: string
+)
+
+# Monitoring and host protection settings. Changes do not send UPS control commands.
+type Config (
+    device: ?string,
+    poll_interval_ms: int,
+    request_timeout_ms: int,
+    reconnect_interval_ms: int,
+    history_samples: int,
+    low_charge_percent: float,
+    high_load_percent: float,
+    high_temperature_c: float,
+    runtime: RuntimeConfig,
+    protection: ?ProtectionConfig
+)
+
+type Identity (model: string, firmware: string)
+type Ratings (
+    voltage_range_code: string,
+    current_range_code: string,
+    battery_nominal_v: int,
+    output_frequency_nominal_hz: int
+)
+
+# last_input_voltage_v is preserved, but its meaning on this firmware is unknown.
+type Telemetry (
+    last_input_voltage_v: float,
+    input_voltage_v: float,
+    output_voltage_v: float,
+    load_percent: float,
+    output_frequency_hz: float,
+    battery_charge_percent: float,
+    temperature_c: float,
+    frame_type: string,
+    status_byte: string,
+    status_bits_msb_first: string
+)
+
+type Sample (
+    sequence: int,
+    time: string,
+    time_unix_ms: int,
+    identity: Identity,
+    ratings: Ratings,
+    telemetry: Telemetry,
+    topology: Topology,
+    vendor_flags: VendorFlags,
+    flags_verified: bool,
+    alerts: Alerts,
+    runtime: ?RuntimeEstimate
+)
+
+type Range (minimum: float, maximum: float)
+# Statistics cover this daemon session and reset if the detected UPS changes.
+type Statistics (
+    samples: int,
+    input_voltage_v: Range,
+    output_voltage_v: Range,
+    load_percent: Range,
+    output_frequency_hz: Range,
+    battery_charge_percent: Range,
+    temperature_c: Range
+)
+
+# Estimated output energy supplied to connected equipment. Missing time is excluded.
+type EnergyTotals (estimated_kwh: float, observed_ms: int, missing_ms: int)
+type EnergyCounters (
+    tracked_since: string,
+    local_date: string,
+    month: string,
+    today: EnergyTotals,
+    month_to_date: EnergyTotals,
+    total: EnergyTotals,
+    last_sample_time: ?string,
+    gap_active: bool
+)
+# Unreadable saved counters remain unavailable and are never overwritten.
+type EnergyStatus (counters: ?EnergyCounters, last_error: ?string)
+
+# A session ends at restored mains, or at its last battery reading if interrupted.
+type BatterySessionEndReason (mains_restored, telemetry_lost, daemon_stopped, monitoring_restarted, device_changed, clock_changed)
+type BatterySessionEnd (reason: BatterySessionEndReason, time_unix_ms: int)
+type BatterySession (
+    id: int,
+    started_at_ms: int,
+    last_seen_at_ms: int,
+    duration_ms: int,
+    start_charge_percent: float,
+    last_charge_percent: float,
+    start_observed: bool,
+    mode_verified: bool,
+    end: ?BatterySessionEnd
+)
+type BatteryHistoryStatus (
+    tracked_since_ms: ?int,
+    active_session: ?BatterySession,
+    retained_sessions: int,
+    revision: int,
+    last_error: ?string
+)
+
+# sample is the last successful read, including while disconnected. Check connection.
+type Snapshot (
+    revision: int,
+    uptime_ms: int,
+    connection: ConnectionState,
+    device: ?string,
+    last_error: ?string,
+    sample: ?Sample,
+    statistics: ?Statistics,
+    config: Config,
+    config_revision: int,
+    protection: ProtectionStatus,
+    energy: ?EnergyStatus,
+    battery_history: ?BatteryHistoryStatus
+)
+
+type EventKind (connection, flags, alerts, configuration, device, control, protection, energy, battery_history)
+type Event (id: int, time: string, time_unix_ms: int, kind: EventKind, message: string)
+
+# A successful write is not a UPS acknowledgement. Command support is unverified.
+type CommandReceipt (
+    request_id: string,
+    action: string,
+    time: string,
+    request_hex: string,
+    bytes_written: int,
+    acknowledged: bool
+)
+
+method GetSnapshot() -> (snapshot: Snapshot)
+# With the more flag, streams changes plus a heartbeat every five seconds.
+method Watch() -> (snapshot: Snapshot)
+# Returns at most history_samples readings, oldest first. limit defaults to 300.
+method GetHistory(limit: ?int) -> (samples: []Sample)
+# The daemon retains up to 256 events. limit defaults to 100, oldest first.
+method GetEvents(limit: ?int) -> (events: []Event)
+# Persistent battery sessions, newest first. before_id paginates older records.
+method GetBatteryHistory(limit: ?int, before_id: ?int) -> (sessions: []BatterySession, has_more: bool, status: BatteryHistoryStatus)
+method GetConfig() -> (config: Config, revision: int)
+# Full replacement. expected_revision rejects updates based on an outdated config.
+method SetConfig(config: Config, expected_revision: ?int) -> (config: Config, revision: int)
+
+# Request IDs deduplicate controls for this daemon session, retaining the last 256.
+method ToggleBeeper(request_id: string) -> (receipt: CommandReceipt)
+# The vendor's ten-second test uses the raw timer value 16 on line-interactive UPSes.
+method StartSelfTest(request_id: string) -> (receipt: CommandReceipt)
+method StartTimedBatteryTest(duration_minutes: int, confirmation: string, request_id: string) -> (receipt: CommandReceipt)
+method StartDischargeTest(confirmation: string, request_id: string) -> (receipt: CommandReceipt)
+method CancelBatteryTest(request_id: string) -> (receipt: CommandReceipt)
+# confirmation must equal the currently connected model. None means no restore.
+# Delay: 1..600 seconds. Restore: 1..10080 minutes after shutdown.
+method ScheduleShutdown(delay_seconds: int, restore_after_minutes: ?int, confirmation: string, request_id: string) -> (receipt: CommandReceipt)
+method CancelShutdown(request_id: string) -> (receipt: CommandReceipt)
+
+error InvalidConfig(reason: string)
+error ConfigConflict(current_revision: int)
+error StorageFailed(reason: string)
+error DeviceUnavailable(reason: string)
+error InvalidControl(reason: string)
+error RequestIdConflict()
+error Busy()
+# A partial write or disconnect can leave the UPS outcome unknown. Do not retry
+# with a new request ID without first checking the UPS.
+error CommandFailed(reason: string, may_have_been_sent: bool)

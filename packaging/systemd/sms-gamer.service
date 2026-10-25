@@ -1,0 +1,19 @@
+[Unit]
+Description=SMS Gamer UPS Varlink daemon
+Documentation=https://varlink.org
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/sms-gamer daemon
+Restart=on-failure
+RestartSec=3
+SuccessExitStatus=130
+TimeoutStopSec=5
+RuntimeDirectory=sms-gamer
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target

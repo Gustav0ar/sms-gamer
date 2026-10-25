@@ -1,0 +1,33 @@
+id = "smsups/sms-gamer"
+name = "SMS Gamer"
+version = "0.1.0"
+plugin_api = 34
+author = "SMS Gamer contributors"
+description = "SMS Gamer UPS telemetry and controls through its Rust Varlink daemon."
+dependencies = ["sms-gamer"]
+
+[[setting]]
+key = "notifications_enabled"
+type = "bool"
+label_key = "settings.notifications"
+description_key = "settings.notifications_description"
+default = true
+
+[[service]]
+id = "data"
+entry = "service.luau"
+
+[[widget]]
+id = "ups"
+entry = "widget.luau"
+hover_highlight = false
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 600
+height = 660
+placement = "attached"
+position = "auto"
+open_near_click = true
+keyboard_focus = "on_demand"

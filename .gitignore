@@ -1,0 +1,16 @@
+/.cache/
+/captures/
+/design/
+/target/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.log
+/config.json
+/energy.json
+/energy.lock
+/battery-history.json
+/battery-history.lock
+/protection-state.json

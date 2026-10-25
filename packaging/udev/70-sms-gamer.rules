@@ -1,0 +1,3 @@
+# Replace the placeholder with ID_SERIAL_SHORT from the UPS adapter's udev properties.
+# Keep the serial match: this USB ID is also used by unrelated serial adapters.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="23a3", ATTRS{serial}=="REPLACE_WITH_DEVICE_SERIAL", TAG+="uaccess"

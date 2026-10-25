@@ -1,0 +1,4 @@
+{
+  "settings.notifications": "UPS desktop notifications",
+  "settings.notifications_description": "Notify when the UPS disconnects or a measured charge, load, or temperature warning starts."
+}
