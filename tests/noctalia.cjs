@@ -125,13 +125,145 @@ watchers.snapshot(values.snapshot)
 assert(text("Saved history is unreadable"), "Storage errors remain visible")
 print("PASS: cursor paging, stale replies, details, active progress, refresh, retry, empty and unavailable states")
 `;
+const service = fs.readFileSync(join(pluginDirectory, 'service.luau'), 'utf8');
+const serviceHarness = `
+local function newService(enabled)
+    local now, subscriptions = 0, 0
+    local messages, values = {}, {}
+    local callback, update, onConfigChanged
+    local os = { clock = function() return now end }
+    local noctalia = {
+        getConfig = function() return enabled ~= false end,
+        setUpdateInterval = function(ms) assert(ms == 5000) end,
+        state = { set = function(key, value) values[key] = value end },
+        json = { decode = function(event) return event end },
+        commandExists = function() return true end,
+        runStream = function(command, receive)
+            assert(command == "sms-gamer watch")
+            subscriptions += 1
+            callback = receive
+            return true
+        end,
+        notify = function(title) table.insert(messages, title) end,
+        notifyError = function(title) table.insert(messages, title) end,
+        log = function(message) error(message) end,
+    }
+    ${service}
+    return {
+        messages = messages, values = values,
+        snapshot = function(connection, alerts)
+            callback({event="snapshot", snapshot={connection=connection, sample={alerts=alerts or {}}}})
+        end,
+        unavailable = function() callback({event="unavailable", message="Daemon unavailable"}) end,
+        tick = function(seconds) now = seconds; update(); assert(subscriptions == 1, "Ticks must reuse the subscription") end,
+        configure = function(value) enabled = value; onConfigChanged() end,
+    }
+end
+
+local brief = newService()
+brief.snapshot("online")
+brief.snapshot("disconnected")
+assert(#brief.messages == 0, "A disconnect must not notify immediately")
+assert(brief.values.snapshot.connection == "disconnected", "The panel must see disconnects immediately")
+brief.tick(59.999)
+brief.snapshot("online")
+brief.tick(120)
+assert(#brief.messages == 0, "A brief disconnect and its recovery must stay silent")
+
+local prolonged = newService()
+prolonged.snapshot("online")
+prolonged.snapshot("disconnected")
+prolonged.tick(30)
+prolonged.snapshot("disconnected")
+prolonged.tick(59.999)
+assert(#prolonged.messages == 0, "Repeated snapshots must not notify before one minute")
+prolonged.tick(60)
+assert(#prolonged.messages == 1 and prolonged.messages[1] == "UPS disconnected", "A prolonged outage must notify even without new snapshots")
+prolonged.tick(120)
+prolonged.snapshot("disconnected")
+assert(#prolonged.messages == 1, "One outage must produce only one disconnect notification")
+prolonged.snapshot("online")
+prolonged.snapshot("online")
+assert(#prolonged.messages == 2 and prolonged.messages[2] == "UPS reconnected", "A notified outage must produce exactly one recovery notification")
+prolonged.snapshot("disconnected")
+prolonged.tick(179.999)
+assert(#prolonged.messages == 2, "A new outage must receive a full new grace period")
+prolonged.tick(180)
+assert(#prolonged.messages == 3, "A later prolonged outage must notify again")
+
+local interrupted = newService()
+interrupted.snapshot("online")
+interrupted.snapshot("disconnected")
+interrupted.tick(40)
+interrupted.snapshot("online")
+interrupted.tick(45)
+interrupted.snapshot("disconnected")
+interrupted.tick(100)
+assert(#interrupted.messages == 0, "Separate short outages must not accumulate")
+interrupted.snapshot("online")
+
+local startup = newService()
+startup.snapshot("disconnected")
+startup.tick(60)
+assert(#startup.messages == 1, "Starting offline must still report a prolonged outage")
+startup.snapshot("online")
+assert(#startup.messages == 2, "Starting offline must recover normally")
+
+local daemon = newService()
+daemon.snapshot("online")
+daemon.unavailable()
+assert(daemon.values.transport.available == false, "Daemon loss must be visible immediately")
+daemon.tick(40)
+daemon.snapshot("connecting")
+daemon.tick(60)
+assert(#daemon.messages == 1, "A connecting snapshot must not restart the outage timer")
+daemon.snapshot("disconnected")
+daemon.tick(90)
+assert(#daemon.messages == 1, "Daemon and serial failures in one outage must share one notification")
+daemon.snapshot("online")
+assert(#daemon.messages == 2, "Recovery after daemon loss must notify once")
+
+local disabled = newService(false)
+disabled.snapshot("disconnected")
+disabled.tick(120)
+assert(#disabled.messages == 0, "Disabled notifications must stay silent")
+disabled.configure(true)
+disabled.tick(179.999)
+assert(#disabled.messages == 0, "Enabling notifications must start a fresh grace period")
+disabled.configure(true)
+disabled.tick(180)
+assert(#disabled.messages == 1, "An unchanged setting must not restart the timer")
+disabled.configure(false)
+disabled.snapshot("online")
+assert(#disabled.messages == 1, "Disabling notifications must clear pending recovery notifications")
+disabled.configure(true)
+disabled.snapshot("disconnected")
+disabled.tick(200)
+disabled.configure(false)
+disabled.tick(300)
+disabled.configure(true)
+disabled.tick(359.999)
+assert(#disabled.messages == 1, "A cancelled timer must not leak into a later enabled period")
+disabled.snapshot("online")
+
+local sensors = newService()
+sensors.snapshot("online")
+sensors.snapshot("online", {low_charge=true, high_load=true, high_temperature=true})
+assert(#sensors.messages == 3, "Charge, load, and temperature warnings must remain immediate")
+print("PASS: connection grace period, timer without events, recovery, repeated outages, startup, daemon loss, settings and sensor warnings")
+`;
 const directory = fs.mkdtempSync(join(tmpdir(), 'sms-gamer-luau-'));
 try {
-  const script = join(directory, 'panel-test.luau');
-  fs.writeFileSync(script, harness);
-  const result = spawnSync(process.env.LUAU || 'luau', [script], {stdio: 'inherit'});
-  if (result.error) throw result.error;
-  process.exitCode = result.status ?? 1;
+  for (const [name, source] of [['panel', harness], ['service', serviceHarness]]) {
+    const script = join(directory, name + '-test.luau');
+    fs.writeFileSync(script, source);
+    const result = spawnSync(process.env.LUAU || 'luau', [script], {stdio: 'inherit'});
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      process.exitCode = result.status ?? 1;
+      break;
+    }
+  }
 } finally {
   fs.rmSync(directory, {recursive: true, force: true});
 }
